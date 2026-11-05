@@ -6,10 +6,9 @@ import hmac
 import os
 import re
 import secrets
-import sqlite3
 import time
 
-from database import db, now
+from database import INTEGRITY_ERRORS, db, now
 
 ITERATIONS = 240_000
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
@@ -74,10 +73,11 @@ def register(name: str, email: str, password: str) -> tuple[dict | None, str | N
     try:
         with db() as c:
             uid = c.execute(
-                "INSERT INTO users (email, name, password_hash, role, created_at, last_login) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO users (email, name, password_hash, role, created_at, last_login) VALUES (?,?,?,?,?,?)"
+                " RETURNING id",
                 (email, name, hash_password(password), "user", now(), now()),
-            ).lastrowid
-    except sqlite3.IntegrityError:
+            ).fetchone()["id"]
+    except INTEGRITY_ERRORS:
         return None, "هذا البريد الإلكتروني مسجّل بالفعل."
     return get_user(uid), None
 

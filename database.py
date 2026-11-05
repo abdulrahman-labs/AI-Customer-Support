@@ -1,9 +1,12 @@
 """طبقة قاعدة البيانات (SQLite): المستخدمون، المحادثات، الرسائل، والتذاكر."""
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 
@@ -17,40 +20,47 @@ STATUSES = [STATUS_AI, STATUS_ESCALATED, STATUS_PROGRESS, STATUS_CLOSED]
 DEPARTMENTS = ["دعم فني", "فواتير ومدفوعات", "الحساب والأمان", "استفسار عام", "شكوى"]
 PRIORITIES = ["منخفضة", "متوسطة", "عالية"]
 
+try:  # يُستخدم فقط عند ضبط DATABASE_URL
+    import psycopg
+    INTEGRITY_ERRORS: tuple = (sqlite3.IntegrityError, psycopg.errors.IntegrityError)
+except ImportError:
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tickets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id {PK},
     user_query TEXT, ai_response TEXT, department TEXT, priority TEXT,
-    status TEXT DEFAULT 'مكتملة بالذكاء الاصطناعي'
+    status TEXT DEFAULT 'مكتملة بالذكاء الاصطناعي',
+    created_at TEXT, user_id INTEGER, conversation_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    id {PK},
+    email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
     is_active INTEGER NOT NULL DEFAULT 1,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
-    locked_until REAL NOT NULL DEFAULT 0,
+    locked_until DOUBLE PRECISION NOT NULL DEFAULT 0,
     created_at TEXT, last_login TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at REAL NOT NULL
+    expires_at DOUBLE PRECISION NOT NULL
 );
 CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id {PK},
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL, created_at TEXT, updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id, updated_at);
 CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id {PK},
     conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL, content TEXT NOT NULL,
     department TEXT, priority TEXT, ticket_id INTEGER,
-    created_at TEXT, ts REAL
+    created_at TEXT, ts DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
 """
@@ -60,30 +70,98 @@ def now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+# ───────────────────────── الاتصال ─────────────────────────
+@lru_cache(maxsize=1)
+def database_url() -> str | None:
+    """رابط PostgreSQL من المتغيرات أو secrets.toml؛ إن لم يوجد نستخدم SQLite المحلي."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        try:
+            import streamlit as st
+            url = st.secrets.get("DATABASE_URL")
+        except Exception:
+            url = None
+    return url or None
+
+
+def is_postgres() -> bool:
+    return bool(database_url())
+
+
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from psycopg.rows import dict_row
+                from psycopg_pool import ConnectionPool
+                _pool = ConnectionPool(
+                    database_url(), min_size=1, max_size=5, max_lifetime=300, timeout=20,
+                    kwargs={"row_factory": dict_row}, check=ConnectionPool.check_connection,
+                )
+    return _pool
+
+
+class _Cursor:
+    """نتيجة استعلام جاهزة: صفوف كقواميس، بدون أي عبارة معلّقة."""
+
+    def __init__(self, cur):
+        self._rows = [dict(r) for r in cur.fetchall()] if cur.description else []
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return self._rows
+
+
+class _Conn:
+    def __init__(self, raw, pg: bool):
+        self.raw, self.pg = raw, pg
+
+    def execute(self, sql: str, params: tuple = ()) -> _Cursor:
+        if self.pg:
+            sql = sql.replace("?", "%s")
+        return _Cursor(self.raw.execute(sql, params))
+
+
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    if is_postgres():
+        with _get_pool().connection() as raw:  # commit تلقائي، وrollback عند الخطأ
+            yield _Conn(raw, True)
+        return
+    raw = sqlite3.connect(DB_PATH, timeout=15)
+    raw.row_factory = sqlite3.Row
+    raw.execute("PRAGMA foreign_keys = ON")
     try:
-        yield conn
-        conn.commit()
+        yield _Conn(raw, False)
+        raw.commit()
     except Exception:
-        conn.rollback()
+        raw.rollback()
         raise
     finally:
-        conn.close()
+        raw.close()
 
 
 def init_db() -> None:
-    with db() as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.executescript(SCHEMA)
-        # ترقية قاعدة البيانات القديمة دون فقد أي بيانات
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tickets)")}
-        for col, ddl in (("created_at", "TEXT"), ("user_id", "INTEGER"), ("conversation_id", "INTEGER")):
-            if col not in cols:
-                conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+    pg = is_postgres()
+    schema = SCHEMA.replace("{PK}", "SERIAL PRIMARY KEY" if pg else "INTEGER PRIMARY KEY AUTOINCREMENT")
+    with db() as c:
+        if not pg:
+            c.raw.execute("PRAGMA journal_mode = WAL")
+        for stmt in schema.split(";"):
+            if stmt.strip():
+                c.execute(stmt)
+        if not pg:  # ترقية قاعدة SQLite القديمة دون فقد بيانات
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(tickets)").fetchall()}
+            for col, ddl in (("created_at", "TEXT"), ("user_id", "INTEGER"), ("conversation_id", "INTEGER")):
+                if col not in cols:
+                    c.raw.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
 
 
 # ───────────────────────── المحادثات والرسائل ─────────────────────────
@@ -91,9 +169,9 @@ def create_conversation(user_id: int, title: str) -> int:
     t = now()
     with db() as c:
         return c.execute(
-            "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?)",
+            "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?) RETURNING id",
             (user_id, title, t, t),
-        ).lastrowid
+        ).fetchone()["id"]
 
 
 def list_conversations(user_id: int, limit: int = 50) -> list[dict]:
@@ -126,9 +204,9 @@ def add_message(conv_id: int, role: str, content: str, department: str | None = 
     with db() as c:
         mid = c.execute(
             "INSERT INTO messages (conversation_id, role, content, department, priority, ticket_id, created_at, ts)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?) RETURNING id",
             (conv_id, role, content, department, priority, ticket_id, now(), time.time()),
-        ).lastrowid
+        ).fetchone()["id"]
         c.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), conv_id))
     return mid
 
@@ -154,9 +232,9 @@ def delete_message(msg_id: int) -> None:
 def count_recent_user_messages(user_id: int, seconds: int) -> int:
     with db() as c:
         return c.execute(
-            "SELECT COUNT(*) FROM messages m JOIN conversations v ON v.id = m.conversation_id "
+            "SELECT COUNT(*) AS n FROM messages m JOIN conversations v ON v.id = m.conversation_id "
             "WHERE v.user_id=? AND m.role='user' AND m.ts>?", (user_id, time.time() - seconds),
-        ).fetchone()[0]
+        ).fetchone()["n"]
 
 
 # ───────────────────────── التذاكر ─────────────────────────
@@ -164,9 +242,9 @@ def save_ticket(user_id: int, conv_id: int, query: str, reply: str, dept: str, p
     with db() as c:
         return c.execute(
             "INSERT INTO tickets (user_query, ai_response, department, priority, status, created_at, user_id, conversation_id)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?) RETURNING id",
             (query, reply, dept, priority, status, now(), user_id, conv_id),
-        ).lastrowid
+        ).fetchone()["id"]
 
 
 def get_ticket_status(ticket_id: int) -> str | None:
@@ -204,14 +282,15 @@ def update_ticket_status(ticket_id: int, status: str) -> None:
 def overview_stats() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     with db() as c:
-        one = lambda sql, *a: c.execute(sql, a).fetchone()[0]  # noqa: E731
+        def one(sql: str, *args) -> int:
+            return c.execute(sql, args).fetchone()["n"]
         return {
-            "users": one("SELECT COUNT(*) FROM users WHERE role='user'"),
-            "conversations": one("SELECT COUNT(*) FROM conversations"),
-            "tickets": one("SELECT COUNT(*) FROM tickets"),
-            "today": one("SELECT COUNT(*) FROM tickets WHERE substr(created_at,1,10)=?", today),
-            "escalated": one("SELECT COUNT(*) FROM tickets WHERE status=?", STATUS_ESCALATED),
-            "closed": one("SELECT COUNT(*) FROM tickets WHERE status=?", STATUS_CLOSED),
+            "users": one("SELECT COUNT(*) AS n FROM users WHERE role='user'"),
+            "conversations": one("SELECT COUNT(*) AS n FROM conversations"),
+            "tickets": one("SELECT COUNT(*) AS n FROM tickets"),
+            "today": one("SELECT COUNT(*) AS n FROM tickets WHERE substr(created_at,1,10)=?", today),
+            "escalated": one("SELECT COUNT(*) AS n FROM tickets WHERE status=?", STATUS_ESCALATED),
+            "closed": one("SELECT COUNT(*) AS n FROM tickets WHERE status=?", STATUS_CLOSED),
         }
 
 

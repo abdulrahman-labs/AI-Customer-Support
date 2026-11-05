@@ -1,0 +1,17 @@
+# أسرار وبيانات: لا تُرفع أبداً
+.streamlit/secrets.toml
+.env
+tickets.db
+tickets.db-wal
+tickets.db-shm
+*.db
+
+# بايثون
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# أخرى
+.DS_Store
+.vscode/

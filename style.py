@@ -33,6 +33,8 @@ span[data-testid="stIconMaterial"]{ font-family:'Material Symbols Rounded' !impo
 [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li{ unicode-bidi:plaintext; text-align:start; }
 [data-testid="stTextInput"] input, [data-testid="stChatInput"] textarea{ unicode-bidi:plaintext; text-align:start; }
 
+[data-testid="stMarkdownContainer"]{ direction:rtl; text-align:right; }
+.hero, .hero *, .auth-brand, .auth-brand *, .footer{ text-align:center; }
 header[data-testid="stHeader"]{ background:transparent; }
 footer, [data-testid="stAppDeployButton"], [data-testid="stMainMenu"]{ visibility:hidden; }
 .block-container{ padding-top:2rem; padding-bottom:7rem; }

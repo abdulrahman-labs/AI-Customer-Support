@@ -17,7 +17,8 @@ STATUS_ESCALATED = "مصعدة لموظف بشري"
 STATUS_PROGRESS = "قيد المعالجة"
 STATUS_CLOSED = "مغلقة"
 STATUSES = [STATUS_AI, STATUS_ESCALATED, STATUS_PROGRESS, STATUS_CLOSED]
-DEPARTMENTS = ["دعم فني", "فواتير ومدفوعات", "الحساب والأمان", "استفسار عام", "شكوى"]
+DEPARTMENTS = ["الباقات والعروض", "الفواتير والرصيد", "الإنترنت والشبكة", "الخطوط والشرائح",
+               "الحساب والأمان", "الشكاوى والاقتراحات", "استفسار عام"]
 PRIORITIES = ["منخفضة", "متوسطة", "عالية"]
 
 try:  # يُستخدم فقط عند ضبط DATABASE_URL

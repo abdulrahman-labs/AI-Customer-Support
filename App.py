@@ -1,4 +1,4 @@
-"""Radd — مساعد الدعم الذكي: تسجيل دخول، محادثات محفوظة لكل مستخدم، ولوحة إدارة."""
+"""Radd — مساعد أثير الذكي لخدمة عملاء الاتصالات: تسجيل دخول، محادثات محفوظة لكل مستخدم، ولوحة إدارة."""
 from __future__ import annotations
 
 import html
@@ -23,21 +23,25 @@ log = logging.getLogger("radd")
 # ───────────────────────── الإعدادات ─────────────────────────
 DEFAULT_MODEL = "gemini-3.6-flash"  # يمكن تغييره من secrets.toml عبر GEMINI_MODEL
 RATE_LIMIT = 8  # أقصى عدد رسائل للمستخدم في الدقيقة
-SYSTEM_PROMPT = f"""أنت Radd، مساعد دعم فني لشركة تقنية.
-- أجب دائماً بالعربية بأسلوب مهذب ومباشر، وقدّم خطوات حل واضحة ومرتبة.
-- إذا كان السؤال ناقصاً فاطلب التفاصيل التي تحتاجها بسؤال واحد قصير.
-- لا تختلق معلومات؛ وإن لم تكن متأكداً فاقترح تحويل الطلب إلى موظف بشري.
+COMPANY = "أثير"
+SYSTEM_PROMPT = f"""أنت Radd، المساعد الذكي لخدمة عملاء شركة «{COMPANY}» للاتصالات (خطوط، باقات إنترنت ومكالمات، فواتير، رصيد، شبكة).
+- أجب دائماً بالعربية بأسلوب مهذب ومباشر، وقدّم خطوات واضحة ومرتبة.
+- لا تملك وصولاً إلى بيانات العميل (رصيده أو فاتورته أو خطه)؛ لا تدّعِ ذلك، وأرشده إلى طريقة معرفتها أو اقترح تحويله إلى موظف.
+- لا تختلق أسعاراً أو أسماء باقات أو أكواداً أو عروضاً أو مواعيد؛ وإن لم تكن متأكداً فاقترح التحويل إلى موظف خدمة العملاء.
+- لا تطلب أبداً كلمة مرور أو رمز تحقق (PIN/OTP) أو بيانات بطاقة بنكية. إن لزم رقم الخط فاطلبه فقط.
+- إذا كان السؤال ناقصاً فاطلب التفصيل الذي تحتاجه بسؤال واحد قصير.
+- اجعل الأولوية «عالية» عند: فقدان أو سرقة الشريحة، شبهة احتيال أو خصم خاطئ، انقطاع الخدمة، أو عميل متضرر بشدة.
 أعد الإجابة بصيغة JSON فقط بالحقول: reply (نص الرد)، department (واحد من: {"، ".join(DEPARTMENTS)})،
 priority (واحد من: {"، ".join(PRIORITIES)}) حسب خطورة المشكلة وإلحاحها."""
 
 SUGGESTIONS = [
-    "كيف أستعيد كلمة المرور؟",
-    "التطبيق يتوقف عند فتحه",
-    "أرغب في استرداد مبلغ دفعته",
-    "أحتاج مساعدة في إعداد حسابي",
+    "كيف أعرف رصيدي وباقتي الحالية؟",
+    "الإنترنت بطيء عندي",
+    "أريد تغيير باقتي",
+    "فقدت شريحتي وأريد إيقافها",
 ]
 
-st.set_page_config(page_title="Radd", page_icon="💬", layout="wide")
+st.set_page_config(page_title="Radd · أثير", page_icon="💬", layout="wide")
 
 
 def get_secret(name: str, default: str | None = None) -> str | None:
@@ -104,7 +108,7 @@ def ask_ai(history: list[dict]) -> dict:
     dept, priority = data.get("department"), data.get("priority")
     return {
         "reply": reply,
-        "department": dept if dept in DEPARTMENTS else "دعم فني",
+        "department": dept if dept in DEPARTMENTS else "استفسار عام",
         "priority": priority if priority in PRIORITIES else "متوسطة",
     }
 
@@ -152,7 +156,7 @@ def login_page() -> None:
     st.markdown(
         "<style>[data-testid='stSidebar'],[data-testid='stSidebarCollapsedControl'],"
         "[data-testid='stExpandSidebarButton']{display:none}.block-container{max-width:460px}</style>"
-        '<div class="auth-brand"><b>Radd</b><span>مساعد الدعم الذكي</span></div>',
+        '<div class="auth-brand"><b>Radd</b><span>مساعد أثير الذكي</span></div>',
         unsafe_allow_html=True,
     )
     tab_in, tab_up = st.tabs(["تسجيل الدخول", "إنشاء حساب"])
@@ -183,7 +187,7 @@ def login_page() -> None:
             password = st.text_input("كلمة المرور", type="password", key="su_pw",
                                      help="8 أحرف على الأقل، وتحتوي على حروف وأرقام.")
             confirm = st.text_input("تأكيد كلمة المرور", type="password")
-            st.caption("بإنشاء حساب، توافق على أن يراجع فريق الدعم طلباتك ومحادثاتك لمساعدتك.")
+            st.caption("بإنشاء حساب، توافق على أن يراجع فريق خدمة عملاء أثير طلباتك ومحادثاتك لمساعدتك.")
             submitted = st.form_submit_button("إنشاء الحساب", type="primary", width="stretch")
         if submitted:
             if password != confirm:
@@ -195,7 +199,7 @@ def login_page() -> None:
                 else:
                     start_session(user)
 
-    st.markdown('<div class="footer">© 2026 Radd · جميع الحقوق محفوظة</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">© 2026 أثير للاتصالات · Radd</div>', unsafe_allow_html=True)
 
 
 # ───────────────────────── الشريط الجانبي ─────────────────────────
@@ -211,7 +215,7 @@ def open_conversation(conv_id: int) -> None:
 def sidebar(user: dict) -> None:
     ss = st.session_state
     with st.sidebar:
-        st.markdown('<div class="brand"><b>Radd</b><small>مساعد الدعم الذكي</small></div>', unsafe_allow_html=True)
+        st.markdown('<div class="brand"><b>Radd</b><small>مساعد أثير الذكي</small></div>', unsafe_allow_html=True)
         role_chip = '<span class="chip">مدير</span>' if user["role"] == "admin" else ""
         st.markdown(
             f'<div class="usercard"><div class="avatar">{html.escape(user["name"][:1].upper())}</div>'
@@ -274,10 +278,10 @@ def export_text(title: str, messages: list[dict]) -> str:
 def render_hero() -> None:
     st.markdown(
         '<div class="hero">'
-        '<span class="hero-kicker">Radd · مساعد الدعم الذكي</span>'
-        '<h1 class="hero-title">كيف يمكننا مساعدتك اليوم؟</h1>'
-        '<p class="hero-note">اكتب سؤالك وسيصلك الرد فوراً. يفهم Radd مشكلتك، ويرتّب طلبك '
-        "حسب القسم والأولوية، ويحوّله إلى موظف بشري عندما تحتاج.</p></div>",
+        '<span class="hero-kicker">أثير للاتصالات · مساعد Radd الذكي</span>'
+        '<h1 class="hero-title">كيف يمكن لأثير مساعدتك اليوم؟</h1>'
+        '<p class="hero-note">اسأل عن باقتك أو رصيدك أو الإنترنت أو فاتورتك وسيصلك الرد فوراً. '
+        "يرتّب Radd طلبك حسب القسم والأولوية، ويحوّله إلى موظف خدمة العملاء عند الحاجة.</p></div>",
         unsafe_allow_html=True,
     )
 
@@ -364,8 +368,8 @@ def chat_page(user: dict) -> None:
     if last:
         status = dbm.get_ticket_status(last["ticket_id"])
         if status in (STATUS_ESCALATED, STATUS_PROGRESS):
-            st.success("تم تحويل طلبك إلى فريق الدعم البشري، وسيتواصل معك قريباً.")
-        elif status == STATUS_AI and st.button("تحويل إلى موظف بشري", key="escalate", icon=":material/support_agent:"):
+            st.success("تم تحويل طلبك إلى فريق خدمة عملاء أثير، وسيتواصل معك قريباً.")
+        elif status == STATUS_AI and st.button("تحويل إلى موظف خدمة العملاء", key="escalate", icon=":material/support_agent:"):
             dbm.escalate_ticket(last["ticket_id"], user["id"])
             st.rerun()
 
@@ -475,7 +479,7 @@ def admin_page(user: dict) -> None:
             only_open = st.toggle("عرض المصعّدة لموظف فقط (تنتظر مراجعة)")
             f1, f2, f3, f4 = st.columns([2, 2, 2, 3])
             status = f1.multiselect("الحالة", STATUSES)
-            dept = f2.multiselect("القسم", DEPARTMENTS)
+            dept = f2.multiselect("القسم", DEPARTMENTS + sorted(set(df["department"].dropna()) - set(DEPARTMENTS)))
             prio = f3.multiselect("الأولوية", PRIORITIES)
             search = f4.text_input("بحث في نص الطلب أو البريد")
             if only_open:
